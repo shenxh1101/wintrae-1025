@@ -19,6 +19,17 @@ import {
   generateWeather,
 } from '@/data/presets';
 
+type GenerateMode = 'append' | 'overwrite';
+
+interface ScenarioSnapshot {
+  plots: Plot[];
+  tasks: ScheduledTask[];
+  inputs: InputRecord[];
+  weather: WeatherSample[];
+  timestamp: number;
+  scenarioId: string;
+}
+
 interface AgriState {
   currentScenarioId: string;
   scenarios: Scenario[];
@@ -27,22 +38,30 @@ interface AgriState {
   inputs: InputRecord[];
   weather: WeatherSample[];
   customCrops: CropVariety[];
+  snapshot: ScenarioSnapshot | null;
 
-  loadPreset: (presetId: string) => void;
+  loadPreset: (presetId: string) => boolean;
   loadFirstPreset: () => void;
+  ensureScenarioLoaded: (scenarioId: string) => boolean;
 
   createScenario: (name: string, description: string) => Scenario;
+  duplicateScenario: (sourceId: string, newName: string) => Scenario | null;
   deleteScenario: (id: string) => void;
   switchScenario: (id: string) => void;
-  exportScenario: () => string;
+  exportScenario: (scenarioId?: string) => string;
   importScenario: (json: string) => boolean;
   clearCurrentData: () => void;
+
+  saveSnapshot: () => boolean;
+  restoreSnapshot: () => boolean;
+  clearSnapshot: () => void;
+  hasSnapshot: boolean;
 
   addPlot: (plot: Omit<Plot, 'id' | 'scenarioId'>) => void;
   updatePlot: (id: string, updates: Partial<Plot>) => void;
   deletePlot: (id: string) => void;
   assignCrop: (plotId: string, cropId: string) => void;
-  generateTasksForPlot: (plotId: string, sowingDate?: string) => void;
+  generateTasksForPlot: (plotId: string, sowingDate?: string, mode?: GenerateMode) => void;
 
   toggleTaskCompleted: (taskId: string) => void;
   deleteTask: (taskId: string) => void;
@@ -157,32 +176,72 @@ export const useAgriStore = create<AgriState>()(
       inputs: [],
       weather: [],
       customCrops: [],
+      snapshot: null,
+      hasSnapshot: false,
 
-      loadPreset: (presetId: string) => {
+      // 加载预设数据：如果 store 中还没有这个预设，就把它的数据追加进去
+      // 不会清空已有数据
+      loadPreset: (presetId) => {
         const preset = PRESET_SCENARIOS.find(p => p.scenario.id === presetId);
-        if (!preset) return;
+        if (!preset) return false;
+        const state = get();
+        // 如果已经加载过这个预设，就只切换
+        if (state.scenarios.find(s => s.id === preset.scenario.id)) {
+          set({ currentScenarioId: preset.scenario.id });
+          return true;
+        }
+        // 追加进去，保留其他案例的数据
         set({
           currentScenarioId: preset.scenario.id,
-          scenarios: [preset.scenario],
-          plots: [...preset.plots],
-          tasks: [...preset.tasks],
-          inputs: [...preset.inputs],
+          scenarios: [...state.scenarios, preset.scenario],
+          plots: [...state.plots, ...preset.plots],
+          tasks: [...state.tasks, ...preset.tasks],
+          inputs: [...state.inputs, ...preset.inputs],
           weather: [...preset.weather],
         });
+        return true;
       },
 
       loadFirstPreset: () => {
         const state = get();
-        if (state.scenarios.length > 0 && state.currentScenarioId) return;
+        if (state.scenarios.length > 0 && state.currentScenarioId) {
+          return;
+        }
         const preset = PRESET_SCENARIOS[0];
-        set({
-          currentScenarioId: preset.scenario.id,
-          scenarios: [preset.scenario],
-          plots: [...preset.plots],
-          tasks: [...preset.tasks],
-          inputs: [...preset.inputs],
-          weather: [...preset.weather],
-        });
+        if (!state.scenarios.find(s => s.id === preset.scenario.id)) {
+          set({
+            currentScenarioId: preset.scenario.id,
+            scenarios: [...state.scenarios, preset.scenario],
+            plots: [...state.plots, ...preset.plots],
+            tasks: [...state.tasks, ...preset.tasks],
+            inputs: [...state.inputs, ...preset.inputs],
+            weather: [...preset.weather],
+          });
+        } else {
+          set({ currentScenarioId: preset.scenario.id });
+        }
+      },
+
+      // 确保某个方案的数据已经加载到 store 中（用于方案对比前调用）
+      ensureScenarioLoaded: (scenarioId) => {
+        const state = get();
+        // 已经在 scenarios 里了，说明数据已加载
+        if (state.scenarios.find(s => s.id === scenarioId)) {
+          return true;
+        }
+        // 看看是不是预设，是就加载进来
+        const preset = PRESET_SCENARIOS.find(p => p.scenario.id === scenarioId);
+        if (preset) {
+          set({
+            scenarios: [...state.scenarios, preset.scenario],
+            plots: [...state.plots, ...preset.plots],
+            tasks: [...state.tasks, ...preset.tasks],
+            inputs: [...state.inputs, ...preset.inputs],
+            weather: state.weather.length > 0 ? state.weather : [...preset.weather],
+          });
+          return true;
+        }
+        return false;
       },
 
       createScenario: (name, description) => {
@@ -195,45 +254,106 @@ export const useAgriStore = create<AgriState>()(
         set(state => ({
           scenarios: [...state.scenarios, newScenario],
           currentScenarioId: newScenario.id,
-          plots: [],
-          tasks: [],
-          inputs: [],
-          weather: generateWeather(30),
         }));
+        return newScenario;
+      },
+
+      // 复制一个方案：复制其地块、任务、投入品
+      duplicateScenario: (sourceId, newName) => {
+        const state = get();
+        const source = state.scenarios.find(s => s.id === sourceId)
+          ?? PRESET_SCENARIOS.find(p => p.scenario.id === sourceId)?.scenario;
+        if (!source) return null;
+
+        // 先确保源数据加载了
+        state.ensureScenarioLoaded(sourceId);
+
+        const latest = get();
+        const srcPlots = latest.plots.filter(p => p.scenarioId === sourceId);
+        const srcTasks = latest.tasks.filter(t => t.plotId && srcPlots.some(p => p.id === t.plotId));
+        const srcInputs = latest.inputs.filter(i => i.scenarioId === sourceId);
+
+        const newScenario: Scenario = {
+          id: generateId('scenario'),
+          name: newName,
+          description: source.description ? `复制自「${source.name}」 ${source.description}` : `复制自「${source.name}」`,
+          createdAt: Date.now(),
+        };
+
+        // 建立旧 plotId -> 新 plotId 的映射
+        const idMap = new Map<string, string>();
+        const newPlots: Plot[] = srcPlots.map(p => {
+          const newId = generateId('plot');
+          idMap.set(p.id, newId);
+          return { ...p, id: newId, scenarioId: newScenario.id };
+        });
+        const newTasks: ScheduledTask[] = srcTasks.map(t => ({
+          ...t,
+          id: generateId('task'),
+          plotId: idMap.get(t.plotId) || t.plotId,
+        }));
+        const newInputs: InputRecord[] = srcInputs.map(i => ({
+          ...i,
+          id: generateId('input'),
+          plotId: idMap.get(i.plotId) || i.plotId,
+          scenarioId: newScenario.id,
+        }));
+
+        set(s => ({
+          scenarios: [...s.scenarios, newScenario],
+          currentScenarioId: newScenario.id,
+          plots: [...s.plots, ...newPlots],
+          tasks: [...s.tasks, ...newTasks],
+          inputs: [...s.inputs, ...newInputs],
+        }));
+
         return newScenario;
       },
 
       deleteScenario: (id) => {
         set(state => {
           const scenarios = state.scenarios.filter(s => s.id !== id);
+          const nextId = state.currentScenarioId === id
+            ? scenarios[0]?.id ?? ''
+            : state.currentScenarioId;
+          const plotsToKeep = state.plots.filter(p => p.scenarioId !== id);
+          const taskPlotIds = new Set(plotsToKeep.map(p => p.id));
           return {
             scenarios,
-            currentScenarioId: state.currentScenarioId === id
-              ? scenarios[0]?.id ?? ''
-              : state.currentScenarioId,
-            plots: state.currentScenarioId === id ? [] : state.plots,
-            tasks: state.currentScenarioId === id ? [] : state.tasks,
-            inputs: state.currentScenarioId === id ? [] : state.inputs,
+            currentScenarioId: nextId,
+            plots: plotsToKeep,
+            tasks: state.tasks.filter(t => taskPlotIds.has(t.plotId)),
+            inputs: state.inputs.filter(i => i.scenarioId !== id),
           };
         });
       },
 
       switchScenario: (id) => {
-        const preset = PRESET_SCENARIOS.find(p => p.scenario.id === id);
-        if (preset && !get().scenarios.find(s => s.id === id)) {
-          get().loadPreset(id);
+        const state = get();
+        // 如果已经是当前的，直接返回
+        if (state.currentScenarioId === id) return;
+        // 如果还没加载，就加载预设数据
+        if (!state.scenarios.find(s => s.id === id)) {
+          state.loadPreset(id);
           return;
         }
         set({ currentScenarioId: id });
       },
 
-      exportScenario: () => {
+      exportScenario: (scenarioId) => {
         const state = get();
+        const sid = scenarioId ?? state.currentScenarioId;
+        const scenario = state.scenarios.find(s => s.id === sid);
+        if (!scenario) return '';
+        const scenarioPlots = state.plots.filter(p => p.scenarioId === sid);
+        const plotIds = new Set(scenarioPlots.map(p => p.id));
+        const scenarioTasks = state.tasks.filter(t => plotIds.has(t.plotId));
+        const scenarioInputs = state.inputs.filter(i => i.scenarioId === sid);
         const data = {
-          scenario: state.scenarios.find(s => s.id === state.currentScenarioId),
-          plots: state.plots,
-          tasks: state.tasks,
-          inputs: state.inputs,
+          scenario,
+          plots: scenarioPlots,
+          tasks: scenarioTasks,
+          inputs: scenarioInputs,
           weather: state.weather,
           customCrops: state.customCrops,
           exportedAt: Date.now(),
@@ -245,15 +365,40 @@ export const useAgriStore = create<AgriState>()(
         try {
           const data = JSON.parse(json);
           if (!data.scenario || !data.plots) return false;
-          set(state => ({
-            scenarios: [...state.scenarios, data.scenario],
-            currentScenarioId: data.scenario.id,
-            plots: data.plots ?? [],
-            tasks: data.tasks ?? [],
-            inputs: data.inputs ?? [],
-            weather: data.weather ?? state.weather,
-            customCrops: data.customCrops ?? state.customCrops,
-          }));
+          set(state => {
+            // 如果有同 ID 的就改个 ID，避免冲突
+            const sid = data.scenario.id;
+            const exists = state.scenarios.find(s => s.id === sid);
+            const finalScenario = exists
+              ? { ...data.scenario, id: generateId('scenario'), name: `${data.scenario.name} (导入)` }
+              : data.scenario;
+            const idMap = new Map<string, string>();
+            const newPlots = (data.plots || []).map((p: Plot) => {
+              const newId = generateId('plot');
+              idMap.set(p.id, newId);
+              return { ...p, id: newId, scenarioId: finalScenario.id };
+            });
+            const newTasks = (data.tasks || []).map((t: ScheduledTask) => ({
+              ...t,
+              id: generateId('task'),
+              plotId: idMap.get(t.plotId) || t.plotId,
+            }));
+            const newInputs = (data.inputs || []).map((i: InputRecord) => ({
+              ...i,
+              id: generateId('input'),
+              plotId: idMap.get(i.plotId) || i.plotId,
+              scenarioId: finalScenario.id,
+            }));
+            return {
+              scenarios: [...state.scenarios, finalScenario],
+              currentScenarioId: finalScenario.id,
+              plots: [...state.plots, ...newPlots],
+              tasks: [...state.tasks, ...newTasks],
+              inputs: [...state.inputs, ...newInputs],
+              weather: data.weather?.length ? data.weather : state.weather,
+              customCrops: data.customCrops?.length ? [...state.customCrops, ...data.customCrops] : state.customCrops,
+            };
+          });
           return true;
         } catch {
           return false;
@@ -261,7 +406,67 @@ export const useAgriStore = create<AgriState>()(
       },
 
       clearCurrentData: () => {
-        set({ plots: [], tasks: [], inputs: [] });
+        const state = get();
+        const sid = state.currentScenarioId;
+        set({
+          plots: state.plots.filter(p => p.scenarioId !== sid),
+          tasks: state.tasks.filter(t => {
+            const plot = state.plots.find(p => p.id === t.plotId);
+            return plot ? plot.scenarioId !== sid : false;
+          }),
+          inputs: state.inputs.filter(i => i.scenarioId !== sid),
+        });
+      },
+
+      // ========== 快照功能 ==========
+      saveSnapshot: () => {
+        const state = get();
+        const sid = state.currentScenarioId;
+        if (!sid) return false;
+        const scenarioPlots = state.plots.filter(p => p.scenarioId === sid);
+        const plotIds = new Set(scenarioPlots.map(p => p.id));
+        const scenarioTasks = state.tasks.filter(t => plotIds.has(t.plotId));
+        const scenarioInputs = state.inputs.filter(i => i.scenarioId === sid);
+        set({
+          snapshot: {
+            plots: JSON.parse(JSON.stringify(scenarioPlots)),
+            tasks: JSON.parse(JSON.stringify(scenarioTasks)),
+            inputs: JSON.parse(JSON.stringify(scenarioInputs)),
+            weather: JSON.parse(JSON.stringify(state.weather)),
+            timestamp: Date.now(),
+            scenarioId: sid,
+          },
+          hasSnapshot: true,
+        });
+        return true;
+      },
+
+      restoreSnapshot: () => {
+        const state = get();
+        const snap = state.snapshot;
+        if (!snap) return false;
+        const sid = snap.scenarioId;
+        // 清除当前案例数据后，把快照数据写回去
+        set(s => {
+          const otherPlots = s.plots.filter(p => p.scenarioId !== sid);
+          const otherInputs = s.inputs.filter(i => i.scenarioId !== sid);
+          // 重新映射 plotId 避免 ID 冲突？其实直接按 snapshot 的 ID 覆盖就行
+          // 先移除属于这个案例的所有 plots/tasks/inputs
+          const plotIdsInSnap = new Set(snap.plots.map(p => p.id));
+          const remainingTasks = s.tasks.filter(t => !plotIdsInSnap.has(t.plotId));
+          return {
+            plots: [...otherPlots, ...snap.plots],
+            tasks: [...remainingTasks, ...snap.tasks],
+            inputs: [...otherInputs, ...snap.inputs],
+            weather: snap.weather,
+            currentScenarioId: sid,
+          };
+        });
+        return true;
+      },
+
+      clearSnapshot: () => {
+        set({ snapshot: null, hasSnapshot: false });
       },
 
       addPlot: (plot) => {
@@ -295,10 +500,10 @@ export const useAgriStore = create<AgriState>()(
               : p,
           ),
         }));
-        get().generateTasksForPlot(plotId);
+        get().generateTasksForPlot(plotId, undefined, 'append');
       },
 
-      generateTasksForPlot: (plotId, sowingDate) => {
+      generateTasksForPlot: (plotId, sowingDate, mode = 'append') => {
         const state = get();
         const plot = state.plots.find(p => p.id === plotId);
         if (!plot?.cropId) return;
@@ -307,32 +512,38 @@ export const useAgriStore = create<AgriState>()(
         const baseDate = sowingDate
           ? new Date(sowingDate)
           : new Date();
-        const existingTasks = state.tasks.filter(t => t.plotId === plotId);
-        const newTasks: ScheduledTask[] = crop.tasks
-          .filter(t => {
-            const taskDate = new Date(baseDate);
-            taskDate.setDate(taskDate.getDate() + t.dayOffset);
-            const dateStr = formatDate(taskDate);
-            return !existingTasks.some(et => et.name === t.name && et.date === dateStr);
-          })
-          .map(t => {
-            const taskDate = new Date(baseDate);
-            taskDate.setDate(taskDate.getDate() + t.dayOffset);
-            const today = new Date();
-            return {
-              id: generateId('task'),
-              plotId,
-              cropId: crop.id,
-              type: t.type as TaskType,
-              name: t.name,
-              date: formatDate(taskDate),
-              completed: taskDate < today,
-              description: t.description,
-            };
-          });
-        set(state => ({
-          tasks: [...existingTasks, ...newTasks],
-        }));
+        const today = new Date();
+
+        const newTasks: ScheduledTask[] = crop.tasks.map(t => {
+          const taskDate = new Date(baseDate);
+          taskDate.setDate(taskDate.getDate() + t.dayOffset);
+          return {
+            id: generateId('task'),
+            plotId,
+            cropId: crop.id,
+            type: t.type as TaskType,
+            name: t.name,
+            date: formatDate(taskDate),
+            completed: taskDate < today,
+            description: t.description,
+          };
+        });
+
+        if (mode === 'overwrite') {
+          // 覆盖模式：先删掉这个地块的所有任务，再加入新的
+          set(state => ({
+            tasks: [...state.tasks.filter(t => t.plotId !== plotId), ...newTasks],
+          }));
+        } else {
+          // 补充模式：按「任务名称 + 日期」去重，不重复加
+          const existingTasks = state.tasks.filter(t => t.plotId === plotId);
+          const filtered = newTasks.filter(nt =>
+            !existingTasks.some(et => et.name === nt.name && et.date === nt.date)
+          );
+          set(state => ({
+            tasks: [...state.tasks, ...filtered],
+          }));
+        }
       },
 
       toggleTaskCompleted: (taskId) => {
@@ -415,6 +626,8 @@ export const useAgriStore = create<AgriState>()(
         inputs: state.inputs,
         weather: state.weather,
         customCrops: state.customCrops,
+        snapshot: state.snapshot,
+        hasSnapshot: state.hasSnapshot,
       }),
       onRehydrateStorage: () => (state) => {
         if (state) {
@@ -430,3 +643,4 @@ export const useAgriStore = create<AgriState>()(
 );
 
 export { CROP_CATEGORIES, CROP_VARIETIES, PRESET_SCENARIOS };
+export type { GenerateMode };

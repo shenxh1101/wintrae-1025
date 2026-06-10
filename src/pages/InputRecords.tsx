@@ -74,6 +74,7 @@ export default function InputRecords() {
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState<InputRecord | null>(null);
+  const [initialCategory, setInitialCategory] = useState<InputCategory>('fertilizer');
 
   const scenarioPlots = useMemo(
     () => plots.filter(p => p.scenarioId === currentScenarioId),
@@ -145,16 +146,10 @@ export default function InputRecords() {
     return { material, labor, total: material + labor, count };
   }, [scenarioInputs]);
 
-  const openNew = (cat?: InputCategory) => {
+  const openNew = (cat: InputCategory = 'fertilizer') => {
     setEditing(null);
+    setInitialCategory(cat);
     setShowModal(true);
-    if (cat) {
-      // 稍后在弹窗中设置
-      setTimeout(() => {
-        const sel = document.getElementById('input-category') as HTMLSelectElement | null;
-        if (sel && cat) sel.value = cat;
-      }, 50);
-    }
   };
   const openEdit = (r: InputRecord) => {
     setEditing(r);
@@ -513,6 +508,7 @@ export default function InputRecords() {
       {showModal && (
         <RecordModal
           editing={editing}
+          initialCategory={initialCategory}
           plots={scenarioPlots}
           onClose={() => { setShowModal(false); setEditing(null); }}
           onSave={(data) => {
@@ -529,19 +525,20 @@ export default function InputRecords() {
 
 interface ModalProps {
   editing: InputRecord | null;
+  initialCategory: InputCategory;
   plots: ReturnType<typeof useAgriStore.getState>['plots'];
   onClose: () => void;
   onSave: (data: Omit<InputRecord, 'id' | 'scenarioId'>) => void;
 }
 
-function RecordModal({ editing, plots, onClose, onSave }: ModalProps) {
+function RecordModal({ editing, initialCategory, plots, onClose, onSave }: ModalProps) {
   const [form, setForm] = useState<Omit<InputRecord, 'id' | 'scenarioId'>>({
     plotId: plots[0]?.id || '',
-    category: editing?.category || 'fertilizer',
+    category: editing?.category || initialCategory,
     name: editing?.name || '',
     date: editing?.date || formatDate(new Date()),
     quantity: editing?.quantity || 0,
-    unit: editing?.unit || 'kg',
+    unit: editing?.unit || DEFAULT_UNITS[editing?.category || initialCategory][0],
     unitPrice: editing?.unitPrice || 0,
     laborCost: editing?.laborCost || 0,
     notes: editing?.notes || '',

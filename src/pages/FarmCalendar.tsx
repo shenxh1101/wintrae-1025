@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { useAgriStore, CROP_CATEGORIES } from '@/store/agriStore';
 import type { TaskType, WeatherCondition } from '@/types';
+import type { GenerateMode } from '@/store/agriStore';
 import { formatDate, addDays, subDays } from '@/data/presets';
 
 const TASK_CONFIG: Record<TaskType, { label: string; color: string; bg: string; icon: string }> = {
@@ -450,9 +451,10 @@ export default function FarmCalendar() {
       {showGenModal && (
         <GeneratePlanModal
           plots={scenarioPlots}
+          tasks={plotTasks}
           onClose={() => setShowGenModal(false)}
-          onGenerate={(plotId, date) => {
-            generateTasksForPlot(plotId, date);
+          onGenerate={(plotId, date, mode) => {
+            generateTasksForPlot(plotId, date, mode);
             setShowGenModal(false);
           }}
         />
@@ -463,14 +465,17 @@ export default function FarmCalendar() {
 
 interface GenProps {
   plots: ReturnType<typeof useAgriStore.getState>['plots'];
+  tasks: ReturnType<typeof useAgriStore.getState>['tasks'];
   onClose: () => void;
-  onGenerate: (plotId: string, sowingDate: string) => void;
+  onGenerate: (plotId: string, sowingDate: string, mode: GenerateMode) => void;
 }
 
-function GeneratePlanModal({ plots, onClose, onGenerate }: GenProps) {
+function GeneratePlanModal({ plots, tasks, onClose, onGenerate }: GenProps) {
   const [plotId, setPlotId] = useState(plots[0]?.id || '');
   const [date, setDate] = useState(formatDate(new Date()));
+  const [mode, setMode] = useState<GenerateMode>('overwrite');
   const plotsWithCrop = plots.filter(p => p.cropId);
+  const selectedPlotTasks = tasks.filter(t => t.plotId === plotId);
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content p-0 max-w-md" onClick={e => e.stopPropagation()}>
@@ -500,6 +505,11 @@ function GeneratePlanModal({ plots, onClose, onGenerate }: GenProps) {
                     <option key={p.id} value={p.id}>{p.name}（{p.areaMu}亩）</option>
                   ))}
                 </select>
+                {selectedPlotTasks.length > 0 && (
+                  <p className="text-xs text-soil-500 mt-1.5">
+                    当前地块已有 <span className="font-semibold text-field-600">{selectedPlotTasks.length}</span> 条任务
+                  </p>
+                )}
               </div>
               <div>
                 <label className="label-base">播种起始日期</label>
@@ -509,17 +519,52 @@ function GeneratePlanModal({ plots, onClose, onGenerate }: GenProps) {
                   value={date}
                   onChange={e => setDate(e.target.value)}
                 />
-                <p className="text-xs text-soil-500 mt-2">
-                  💡 系统将根据所选作物的标准农事模板，自动计算各任务日期。
-                </p>
               </div>
+              <div>
+                <label className="label-base">生成模式</label>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    onClick={() => setMode('overwrite')}
+                    className={`p-3 rounded-xl border-2 text-left transition-all
+                      ${mode === 'overwrite'
+                        ? 'border-field-500 bg-field-50 shadow-sm'
+                        : 'border-soil-200 hover:border-field-300 bg-white'}`}
+                  >
+                    <div className={`text-sm font-semibold ${mode === 'overwrite' ? 'text-field-700' : 'text-soil-700'}`}>
+                      🔄 覆盖生成
+                    </div>
+                    <div className="text-xs text-soil-500 mt-1">
+                      清除原有任务，重新生成完整计划
+                    </div>
+                  </button>
+                  <button
+                    onClick={() => setMode('append')}
+                    className={`p-3 rounded-xl border-2 text-left transition-all
+                      ${mode === 'append'
+                        ? 'border-harvest-500 bg-harvest-50 shadow-sm'
+                        : 'border-soil-200 hover:border-harvest-300 bg-white'}`}
+                  >
+                    <div className={`text-sm font-semibold ${mode === 'append' ? 'text-harvest-700' : 'text-soil-700'}`}>
+                      ➕ 补充生成
+                    </div>
+                    <div className="text-xs text-soil-500 mt-1">
+                      保留原有任务，只追加新的任务
+                    </div>
+                  </button>
+                </div>
+              </div>
+              <p className="text-xs text-soil-500 bg-soil-50 p-3 rounded-lg border border-soil-100">
+                💡 系统将根据所选作物的标准农事模板，自动计算各任务日期。
+                {mode === 'overwrite' && ' 覆盖模式下，该地块原有任务将被全部替换。'}
+                {mode === 'append' && ' 补充模式下，同名同日期的任务不会重复添加。'}
+              </p>
             </>
           )}
         </div>
         <div className="px-6 py-4 border-t border-soil-100 bg-soil-50/50 flex justify-end gap-3 rounded-b-2xl">
           <button onClick={onClose} className="btn-secondary px-5">取消</button>
           {plotsWithCrop.length > 0 && (
-            <button onClick={() => onGenerate(plotId, date)} className="btn-primary">
+            <button onClick={() => onGenerate(plotId, date, mode)} className="btn-primary">
               生成计划
             </button>
           )}

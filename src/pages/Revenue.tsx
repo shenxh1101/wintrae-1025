@@ -52,6 +52,8 @@ export default function Revenue() {
     computeRevenue,
     createScenario,
     exportScenario,
+    duplicateScenario,
+    ensureScenarioLoaded,
   } = useAgriStore();
 
   const [compareIds, setCompareIds] = useState<string[]>([]);
@@ -189,35 +191,34 @@ export default function Revenue() {
   // 另存为新方案
   const saveAsNewScenario = () => {
     const name = prompt('新方案名称：', `${curScenario?.name || ''}（副本）`);
-    if (!name) return;
-    const s = createScenario(name, '基于现有方案复制的种植方案对比版本');
-    // 复制数据
-    const oldPlots = plots.filter(p => p.scenarioId === currentScenarioId);
-    const oldInputs = inputs.filter(i => i.scenarioId === currentScenarioId);
-    // 延迟导入 - 通过导出导入
-    setTimeout(() => {
-      const data = JSON.parse(exportScenario());
-      const { addPlot, addInput } = useAgriStore.getState();
-      useAgriStore.setState({ currentScenarioId: s.id });
-      oldPlots.forEach(p => addPlot({ ...p, scenarioId: s.id } as any));
-      setTimeout(() => {
-        const newPlots = useAgriStore.getState().plots.filter(p => p.scenarioId === s.id);
-        const idMap = new Map<string, string>();
-        oldPlots.forEach((op, i) => idMap.set(op.id, newPlots[i]?.id || op.id));
-        oldInputs.forEach(i => addInput({
-          ...i,
-          scenarioId: s.id,
-          plotId: idMap.get(i.plotId) || i.plotId,
-        } as any));
-      }, 50);
-    }, 0);
+    if (!name?.trim()) return;
+    const result = duplicateScenario(currentScenarioId, name.trim());
+    if (!result) {
+      alert('复制方案失败，请重试');
+    }
   };
 
   const toggleCompare = (id: string) => {
     if (id === currentScenarioId) return;
-    setCompareIds(prev =>
-      prev.includes(id) ? prev.filter(x => x !== id) : prev.length < 3 ? [...prev, id] : prev,
-    );
+    if (compareIds.includes(id)) {
+      setCompareIds(prev => prev.filter(x => x !== id));
+    } else {
+      // 添加前确保数据已加载
+      const loaded = ensureScenarioLoaded(id);
+      if (!loaded) {
+        alert('该方案数据不可用');
+        return;
+      }
+      // 检查方案是否有数据（面积>0）
+      const r = computeRevenue(id);
+      if (r.totalArea <= 0) {
+        alert('该方案暂无有效种植数据，无法参与对比');
+        return;
+      }
+      if (compareIds.length < 3) {
+        setCompareIds(prev => [...prev, id]);
+      }
+    }
   };
 
   return (

@@ -12,6 +12,9 @@ import {
   X,
   FolderKanban,
   ChevronDown,
+  Camera,
+  RotateCcw,
+  History,
 } from 'lucide-react';
 import { useAgriStore, PRESET_SCENARIOS } from '@/store/agriStore';
 import ScenarioModal from './ScenarioModal';
@@ -34,6 +37,12 @@ export default function AppLayout() {
     switchScenario,
     exportScenario,
     importScenario,
+    ensureScenarioLoaded,
+    saveSnapshot,
+    restoreSnapshot,
+    clearSnapshot,
+    hasSnapshot,
+    snapshot,
   } = useAgriStore();
 
   const currentScenario = scenarios.find(s => s.id === currentScenarioId)
@@ -65,6 +74,33 @@ export default function AppLayout() {
     reader.readAsText(file);
     e.target.value = '';
   };
+
+  const handlePresetSwitch = (presetId: string) => {
+    ensureScenarioLoaded(presetId);
+    switchScenario(presetId);
+    setPresetMenuOpen(false);
+  };
+
+  const handleSaveSnapshot = () => {
+    if (!hasSnapshot || confirm('已存在快照，是否覆盖当前快照？')) {
+      const ok = saveSnapshot();
+      if (ok) {
+        alert('快照已保存！讲解结束后可一键恢复到此状态。');
+      }
+    }
+  };
+
+  const handleRestoreSnapshot = () => {
+    if (!hasSnapshot) return;
+    if (confirm('确定要恢复到快照状态吗？当前演示中的修改将被撤销。')) {
+      const ok = restoreSnapshot();
+      if (ok) {
+        alert('已恢复到快照状态！');
+      }
+    }
+  };
+
+  const snapshotDate = snapshot ? new Date(snapshot.timestamp).toLocaleString('zh-CN') : '';
 
   return (
     <div className="min-h-screen flex">
@@ -138,10 +174,7 @@ export default function AppLayout() {
                   {PRESET_SCENARIOS.map(p => (
                     <button
                       key={p.scenario.id}
-                      onClick={() => {
-                        switchScenario(p.scenario.id);
-                        setPresetMenuOpen(false);
-                      }}
+                      onClick={() => handlePresetSwitch(p.scenario.id)}
                       className={`w-full px-3 py-2 rounded-lg text-left text-xs transition-all
                         ${currentScenarioId === p.scenario.id
                           ? 'bg-harvest-500 text-white shadow-md shadow-harvest-500/30'
@@ -153,6 +186,53 @@ export default function AppLayout() {
                 </div>
               )}
             </div>
+          </div>
+
+          {/* 快照功能区 */}
+          <div className="px-4 py-3 border-b border-white/10">
+            <div className="flex items-center gap-2 text-xs text-field-300 mb-2">
+              <Camera size={14} />
+              演示快照
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={handleSaveSnapshot}
+                className="px-2.5 py-2 rounded-lg text-xs bg-white/5 text-field-200
+                  hover:bg-white/10 border border-white/10 transition-all flex flex-col items-center gap-1"
+                title="保存当前案例状态为快照"
+              >
+                <Camera size={16} />
+                <span>保存快照</span>
+              </button>
+              <button
+                onClick={handleRestoreSnapshot}
+                disabled={!hasSnapshot}
+                className={`px-2.5 py-2 rounded-lg text-xs transition-all flex flex-col items-center gap-1
+                  ${hasSnapshot
+                    ? 'bg-harvest-500/20 text-harvest-200 hover:bg-harvest-500/30 border border-harvest-500/30'
+                    : 'bg-white/5 text-field-500 border border-white/5 cursor-not-allowed'}`}
+                title="恢复到快照状态"
+              >
+                <RotateCcw size={16} />
+                <span>恢复快照</span>
+              </button>
+            </div>
+            {hasSnapshot && snapshot && (
+              <div className="mt-2 px-2 py-1.5 rounded-md bg-harvest-500/10 border border-harvest-500/20">
+                <div className="text-[10px] text-harvest-300 flex items-center gap-1.5">
+                  <History size={10} />
+                  <span className="truncate">{snapshotDate}</span>
+                </div>
+              </div>
+            )}
+            {hasSnapshot && (
+              <button
+                onClick={() => clearSnapshot()}
+                className="mt-1.5 w-full text-[10px] text-field-400 hover:text-field-200 text-right"
+              >
+                清除快照
+              </button>
+            )}
           </div>
 
           {/* 导航菜单 */}
@@ -227,6 +307,13 @@ export default function AppLayout() {
               </div>
             </div>
             <div className="flex items-center gap-3 shrink-0">
+              {hasSnapshot && (
+                <span className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full
+                  bg-harvest-50 text-harvest-700 text-xs font-medium border border-harvest-200">
+                  <Camera size={12} />
+                  快照已保存
+                </span>
+              )}
               <span className="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full
                 bg-field-50 text-field-700 text-xs font-medium border border-field-200">
                 <span className="w-2 h-2 rounded-full bg-field-500 animate-pulse" />

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { X, Plus, Trash2, Check, FolderOpen } from 'lucide-react';
+import { X, Plus, Trash2, Check, FolderOpen, Copy } from 'lucide-react';
 import { useAgriStore, PRESET_SCENARIOS } from '@/store/agriStore';
 
 interface Props {
@@ -13,14 +13,17 @@ export default function ScenarioModal({ onClose }: Props) {
     createScenario,
     deleteScenario,
     switchScenario,
+    duplicateScenario,
+    ensureScenarioLoaded,
   } = useAgriStore();
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [showCreate, setShowCreate] = useState(false);
 
+  // 合并预设和本地保存的案例，预设优先显示
   const allScenarios = [
-    ...PRESET_SCENARIOS.map(p => ({ ...p.scenario, isPreset: true })),
-    ...scenarios.map(s => ({ ...s, isPreset: false })),
+    ...PRESET_SCENARIOS.map(p => ({ ...p.scenario, isPreset: true, isLoaded: scenarios.some(s => s.id === p.scenario.id) })),
+    ...scenarios.filter(s => !PRESET_SCENARIOS.some(p => p.scenario.id === s.id)).map(s => ({ ...s, isPreset: false, isLoaded: true })),
   ];
 
   const handleCreate = () => {
@@ -29,6 +32,26 @@ export default function ScenarioModal({ onClose }: Props) {
     setNewName('');
     setNewDesc('');
     setShowCreate(false);
+  };
+
+  const handleSwitch = (id: string, isPreset: boolean) => {
+    if (isPreset) {
+      ensureScenarioLoaded(id);
+    }
+    switchScenario(id);
+    onClose();
+  };
+
+  const handleDuplicate = (e: React.MouseEvent, id: string, name: string) => {
+    e.stopPropagation();
+    const newNameVal = prompt('为复制的案例命名：', `${name} - 副本`);
+    if (!newNameVal?.trim()) return;
+    const result = duplicateScenario(id, newNameVal.trim());
+    if (result) {
+      onClose();
+    } else {
+      alert('复制失败');
+    }
   };
 
   return (
@@ -43,7 +66,7 @@ export default function ScenarioModal({ onClose }: Props) {
               <FolderOpen size={22} className="text-harvest-500" />
               演示案例管理
             </h3>
-            <p className="text-sm text-soil-500 mt-1">切换、创建或删除演示案例，快速更换展示内容</p>
+            <p className="text-sm text-soil-500 mt-1">切换、创建、复制或删除演示案例，快速更换展示内容</p>
           </div>
           <button
             onClick={onClose}
@@ -124,14 +147,11 @@ export default function ScenarioModal({ onClose }: Props) {
                     ${isActive
                       ? 'border-field-500 bg-field-50/70 shadow-sm'
                       : 'border-soil-200 hover:border-field-300 hover:bg-soil-50/60'}`}
-                  onClick={() => {
-                    switchScenario(s.id);
-                    onClose();
-                  }}
+                  onClick={() => handleSwitch(s.id, s.isPreset)}
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="font-semibold text-soil-800">{s.name}</span>
                         {s.isPreset && (
                           <span className="badge bg-harvest-100 text-harvest-700">
@@ -144,6 +164,11 @@ export default function ScenarioModal({ onClose }: Props) {
                             当前
                           </span>
                         )}
+                        {s.isLoaded && !isActive && s.isPreset && (
+                          <span className="badge bg-sky-50 text-sky-600 border border-sky-200">
+                            已加载
+                          </span>
+                        )}
                       </div>
                       {s.description && (
                         <p className="text-sm text-soil-500 mt-1 line-clamp-2">{s.description}</p>
@@ -152,20 +177,28 @@ export default function ScenarioModal({ onClose }: Props) {
                         创建于 {new Date(s.createdAt).toLocaleDateString('zh-CN')}
                       </p>
                     </div>
-                    {!s.isPreset && (
+                    <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (confirm(`确定要删除案例「${s.name}」吗？`)) {
-                            deleteScenario(s.id);
-                          }
-                        }}
-                        className="p-2 rounded-lg text-soil-400 hover:text-tomato-500 hover:bg-tomato-50
-                          opacity-0 group-hover:opacity-100 transition-all shrink-0"
+                        onClick={(e) => handleDuplicate(e, s.id, s.name)}
+                        className="p-2 rounded-lg text-soil-400 hover:text-field-500 hover:bg-field-50 transition-all"
+                        title="复制此案例"
                       >
-                        <Trash2 size={18} />
+                        <Copy size={18} />
                       </button>
-                    )}
+                      {!s.isPreset && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (confirm(`确定要删除案例「${s.name}」吗？`)) {
+                              deleteScenario(s.id);
+                            }
+                          }}
+                          className="p-2 rounded-lg text-soil-400 hover:text-tomato-500 hover:bg-tomato-50 transition-all"
+                        >
+                          <Trash2 size={18} />
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               );
@@ -175,7 +208,7 @@ export default function ScenarioModal({ onClose }: Props) {
 
         <div className="px-6 py-4 border-t border-soil-100 bg-soil-50/50 rounded-b-2xl">
           <p className="text-xs text-soil-500 text-center">
-            💡 提示：数据保存在浏览器本地存储，可导出 JSON 备份或在不同设备间迁移
+            💡 预设案例加载后会保存在本地，刷新不丢失。不同案例的数据相互独立。
           </p>
         </div>
       </div>
